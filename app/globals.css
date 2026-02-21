@@ -5,13 +5,13 @@
 }
 
 :root {
-  --bg: #0f1419;
-  --bg-card: #1a2332;
-  --border: #2d3a4d;
-  --text: #e6edf3;
-  --text-muted: #8b9cb3;
-  --accent: #c9a227;
-  --accent-hover: #dbb83a;
+  --bg: #141c24;
+  --bg-card: #1e2a3a;
+  --border: #3d4f66;
+  --text: #eef2f6;
+  --text-muted: #9cadc4;
+  --accent: #d4af37;
+  --accent-hover: #e6c54a;
   --error: #e5534b;
 }
 
@@ -27,6 +27,10 @@ body {
   background: var(--bg);
   color: var(--text);
   line-height: 1.5;
+}
+body[data-dragging] {
+  cursor: grabbing;
+  user-select: none;
 }
 
 a {
@@ -46,4 +50,119 @@ button {
 
 input {
   font-family: inherit;
+}
+
+/* 首页选人：选手卡片（全局以保证在子组件内也生效） */
+.home-player-card {
+  position: relative;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-drag: element;
+  padding: 0.5rem 0.75rem;
+  padding-top: 1.5rem;
+  background: var(--bg);
+  border: 2px solid #5a7090;
+  border-radius: 8px;
+  min-width: 100px;
+  transition: opacity 0.15s, box-shadow 0.15s, border-color 0.15s;
+  box-sizing: border-box;
+}
+.home-player-card-rank-103 {
+  background: rgba(212, 175, 55, 0.38);
+  border-color: #d4af37;
+}
+.home-player-card-rank-104 {
+  background: rgba(243, 156, 18, 0.38);
+  border-color: #f39c12;
+}
+.home-player-card-rank-105 {
+  background: rgba(231, 76, 60, 0.38);
+  border-color: #e74c3c;
+}
+.home-player-card-rank-107 {
+  background: rgba(52, 152, 219, 0.38);
+  border-color: #3498db;
+}
+.home-player-card-delete {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: var(--border);
+  color: var(--text);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.home-player-card-delete:hover {
+  background: var(--error);
+  color: #fff;
+}
+.home-player-card:hover {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.home-player-card:active {
+  cursor: grabbing;
+}
+.home-player-card.dim {
+  opacity: 0.5;
+}
+.home-player-card-drag-preview {
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  opacity: 0.95;
+}
+.home-player-card-expanded {
+  min-width: 140px;
+}
+.home-player-card-detail {
+  margin-top: 0.35rem;
+  padding-top: 0.35rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+.home-player-card-detail-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.15rem;
+}
+.home-player-card-detail-row:last-child {
+  margin-bottom: 0;
+}
+.home-player-card-detail .detail-label {
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+.home-player-card-detail .detail-label + span {
+  color: var(--text);
+  text-align: right;
+}
+.home-player-card .home-player-card-name,
+.home-player-card .home-player-card-stats {
+  pointer-events: none;
+}
+.home-player-card .home-player-card-name {
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--text);
+  margin-bottom: 0.25rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.home-player-card .home-player-card-stats {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+.home-player-card .home-player-card-stats .sep {
+  margin: 0 0.2rem;
 }
