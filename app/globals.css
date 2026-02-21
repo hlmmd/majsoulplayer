@@ -115,6 +115,11 @@ input {
 .home-player-card.dim {
   opacity: 0.5;
 }
+/* 拖拽时隐藏原位的卡片，只显示跟随鼠标的预览 */
+.home-player-card.dragging {
+  opacity: 0;
+  pointer-events: none;
+}
 .home-player-card-drag-preview {
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
   opacity: 0.95;

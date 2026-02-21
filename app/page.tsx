@@ -86,61 +86,14 @@ export default function HomePage() {
   const [dragNickname, setDragNickname] = useState<string | null>(null);
   const [pointerDrag, setPointerDrag] = useState<{ nickname: string; source: DragSource; offsetX: number; offsetY: number } | null>(null);
   const [deletedNicknames, setDeletedNicknames] = useState<string[]>([]);
-  const [expandedNicknames, setExpandedNicknames] = useState<string[]>([]);
   const [standbyPool, setStandbyPool] = useState<string[]>([]);
   const deletedSet = useMemo(() => new Set(deletedNicknames), [deletedNicknames]);
-  const expandedSet = useMemo(() => new Set(expandedNicknames), [expandedNicknames]);
   const standbySet = useMemo(() => new Set(standbyPool), [standbyPool]);
-
-  const toggleExpanded = useCallback((nickname: string) => {
-    setExpandedNicknames((prev) =>
-      prev.includes(nickname) ? prev.filter((n) => n !== nickname) : [...prev, nickname]
-    );
-  }, []);
-
-  const toggleExpandedRef = useRef(toggleExpanded);
-  toggleExpandedRef.current = toggleExpanded;
-  const mainRef = useRef<HTMLElement | null>(null);
-  const lastCardClickRef = useRef<{ nickname: string; time: number } | null>(null);
-  const DOUBLE_CLICK_MS = 400;
 
   const pool = useMemo(() => {
     const inTeams = new Set(teams.flat());
     return list.filter((n) => !deletedSet.has(n) && !inTeams.has(n) && !standbySet.has(n));
   }, [list, teams, deletedSet, standbySet]);
-
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const target = (e as MouseEvent).target as HTMLElement | null;
-      if (target?.closest?.(".home-player-card-delete")) return;
-      const card = e.currentTarget as HTMLElement;
-      const nickname = card.getAttribute("data-nickname");
-      if (!nickname) return;
-      const now = Date.now();
-      const last = lastCardClickRef.current;
-      if (last?.nickname === nickname && now - last.time < DOUBLE_CLICK_MS) {
-        lastCardClickRef.current = null;
-        e.preventDefault();
-        e.stopPropagation();
-        toggleExpandedRef.current(nickname);
-      } else {
-        lastCardClickRef.current = { nickname, time: now };
-      }
-    };
-    let cleanups: (() => void)[] = [];
-    const id = requestAnimationFrame(() => {
-      const cards = document.querySelectorAll(".home-player-card");
-      cards.forEach((el) => {
-        if (!(el instanceof HTMLElement)) return;
-        el.addEventListener("click", handler);
-        cleanups.push(() => el.removeEventListener("click", handler));
-      });
-    });
-    return () => {
-      cancelAnimationFrame(id);
-      cleanups.forEach((c) => c());
-    };
-  }, [pool, teams, standbyPool]);
 
   const hydrate = useCallback(() => {
     setList(loadList());
@@ -177,20 +130,38 @@ export default function HomePage() {
     setStandbyPool(standby);
   }, []);
 
+  const teamCountEffectMountedRef = useRef(false);
+
   useEffect(() => {
     hydrate();
   }, [hydrate]);
 
   useEffect(() => {
+    if (!teamCountEffectMountedRef.current) {
+      teamCountEffectMountedRef.current = true;
+      return;
+    }
     const n = Math.max(2, Math.min(16, teamCount));
     if (n !== teamCount) {
       setTeamCount(n);
       return;
     }
     localStorage.setItem(STORAGE_TEAM_COUNT, String(n));
+    let base: string[][] = [];
+    try {
+      const raw = localStorage.getItem(STORAGE_TEAMS);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          base = parsed.filter((t): t is string[] => Array.isArray(t) && t.every((x) => typeof x === "string"));
+        }
+      }
+    } catch {
+      // ignore
+    }
     setTeams((prev) => {
       const next: string[][] = [];
-      for (let i = 0; i < n; i++) next.push(prev[i] ?? []);
+      for (let i = 0; i < n; i++) next.push((base[i] ?? prev[i]) ?? []);
       const saved = next.map((t) => [...t]);
       localStorage.setItem(STORAGE_TEAMS, JSON.stringify(saved));
       return next;
@@ -324,8 +295,9 @@ export default function HomePage() {
   deletedNicknamesRef.current = deletedNicknames;
   teamsRef.current = teams;
 
-  const handleCardPointerDown = useCallback((e: React.MouseEvent<HTMLDivElement>, nickname: string, source: DragSource) => {
+  const handleCardMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>, nickname: string, source: DragSource) => {
     if (e.button !== 0) return;
+    e.preventDefault();
     const rect = e.currentTarget.getBoundingClientRect();
     setDragPending({
       nickname,
@@ -356,7 +328,8 @@ export default function HomePage() {
       }
     };
     const onUp = (e: MouseEvent) => {
-      const target = e.target as HTMLElement | null;
+      if (e.button !== 0) return;
+      const target = document.elementFromPoint(dragPending.startX, dragPending.startY) as HTMLElement | null;
       const restoreBtn = target?.closest?.(".btn-restore");
       const hasDeleted = deletedNicknamesRef.current.length > 0;
       const hasInTeams = teamsRef.current.some((t) => t.length > 0);
@@ -380,24 +353,34 @@ export default function HomePage() {
       setDragPreviewPos({ x: e.clientX, y: e.clientY });
     };
     const onUp = (e: MouseEvent) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation();
       const x = e.clientX;
       const y = e.clientY;
+      const nickname = pointerDrag.nickname;
+      const preview = document.querySelector(".home-player-card-drag-preview");
+      if (preview instanceof HTMLElement) {
+        preview.style.setProperty("visibility", "hidden");
+        preview.style.setProperty("pointer-events", "none");
+      }
       const el = document.elementFromPoint(x, y) as HTMLElement | null;
       const teamBox = el?.closest?.("[data-team-index]");
       const poolArea = el?.closest?.(".pool-area");
       const standbyArea = el?.closest?.(".standby-area");
       if (standbyArea) {
-        moveToStandbyRef.current(pointerDrag.nickname);
+        moveToStandbyRef.current(nickname);
       } else if (teamBox) {
         const idxStr = teamBox.getAttribute("data-team-index");
         const idx = idxStr != null ? parseInt(idxStr, 10) : -1;
         if (idx >= 0 && idx < teamCountRef.current) {
-          removeFromStandbyRef.current(pointerDrag.nickname);
-          moveToTeamRef.current(pointerDrag.nickname, idx);
+          removeFromStandbyRef.current(nickname);
+          moveToTeamRef.current(nickname, idx);
         }
       } else if (poolArea) {
-        removeFromStandbyRef.current(pointerDrag.nickname);
-        moveToPoolRef.current(pointerDrag.nickname);
+        removeFromStandbyRef.current(nickname);
+        moveToPoolRef.current(nickname);
       }
       setPointerDrag(null);
       setDragPreviewPos(null);
@@ -405,11 +388,11 @@ export default function HomePage() {
       setDragNickname(null);
     };
     window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
+    document.addEventListener("mouseup", onUp, true);
     return () => {
       document.body.removeAttribute("data-dragging");
       window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
+      document.removeEventListener("mouseup", onUp, true);
     };
   }, [pointerDrag]);
 
@@ -423,14 +406,10 @@ export default function HomePage() {
     nickname,
     source,
     dim,
-    onDelete,
-    expanded,
   }: {
     nickname: string;
     source: DragSource;
     dim?: boolean;
-    onDelete: () => void;
-    expanded: boolean;
   }) {
     const stats = statsCache[nickname];
     const currentLevelLabel = stats ? levelIdToLabel(stats.level?.id) : "—";
@@ -440,87 +419,20 @@ export default function HomePage() {
     const rankClass = rankCode !== null && [103, 104, 105, 107].includes(rankCode) ? `home-player-card-rank-${rankCode}` : "";
     return (
       <div
-        className={`home-player-card ${rankClass} ${dim ? "dim" : ""} ${expanded ? "home-player-card-expanded" : ""}`}
+        className={`home-player-card ${rankClass} ${dim ? "dragging" : ""}`}
         data-nickname={nickname}
         data-source={JSON.stringify(source)}
         draggable={false}
-        onMouseDown={(e) => handleCardPointerDown(e, nickname, source)}
+        onMouseDown={(e) => handleCardMouseDown(e, nickname, source)}
       >
-        {expanded && (
-          <button
-            type="button"
-            className="home-player-card-delete"
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              onDelete();
-            }}
-            onMouseDown={(e) => e.stopPropagation()}
-            title="临时删除"
-            aria-label="临时删除"
-          >
-            ×
-          </button>
-        )}
         <div className="home-player-card-name">{nickname}</div>
-        {expanded ? (
-          <div className="home-player-card-detail">
-            {stats ? (
-              <>
-                <div className="home-player-card-detail-row">
-                  <span className="detail-label">场次</span>
-                  <span>{stats.count}</span>
-                </div>
-                <div className="home-player-card-detail-row">
-                  <span className="detail-label">当前分段</span>
-                  <span>{levelIdToLabel(stats.level?.id)}</span>
-                </div>
-                <div className="home-player-card-detail-row">
-                  <span className="detail-label">当前分数</span>
-                  <span>{levelScore(stats.level)}</span>
-                </div>
-                <div className="home-player-card-detail-row">
-                  <span className="detail-label">最高分段</span>
-                  <span>{levelIdToLabel(stats.max_level?.id)}</span>
-                </div>
-                <div className="home-player-card-detail-row">
-                  <span className="detail-label">最高分数</span>
-                  <span>{levelScore(stats.max_level)}</span>
-                </div>
-                <div className="home-player-card-detail-row">
-                  <span className="detail-label">1位率</span>
-                  <span>{stats.rank_rates?.[0] != null ? `${(stats.rank_rates[0] * 100).toFixed(1)}%` : "—"}</span>
-                </div>
-                <div className="home-player-card-detail-row">
-                  <span className="detail-label">2位率</span>
-                  <span>{stats.rank_rates?.[1] != null ? `${(stats.rank_rates[1] * 100).toFixed(1)}%` : "—"}</span>
-                </div>
-                <div className="home-player-card-detail-row">
-                  <span className="detail-label">3位率</span>
-                  <span>{stats.rank_rates?.[2] != null ? `${(stats.rank_rates[2] * 100).toFixed(1)}%` : "—"}</span>
-                </div>
-                <div className="home-player-card-detail-row">
-                  <span className="detail-label">4位率</span>
-                  <span>{stats.rank_rates?.[3] != null ? `${(stats.rank_rates[3] * 100).toFixed(1)}%` : "—"}</span>
-                </div>
-                <div className="home-player-card-detail-row">
-                  <span className="detail-label">平均顺位</span>
-                  <span>{typeof stats.avg_rank === "number" ? stats.avg_rank.toFixed(2) : "—"}</span>
-                </div>
-              </>
-            ) : (
-              <div className="home-player-card-detail-row">暂无战绩缓存</div>
-            )}
-          </div>
-        ) : (
-          <div className="home-player-card-stats">
-            <span title="当前段位">{currentLevelLabel}</span>
-            <span className="sep">/</span>
-            <span title="当前分数">{currentScore}</span>
-            <span className="sep">/</span>
-            <span title="平均顺位">{avgRank}</span>
-          </div>
-        )}
+        <div className="home-player-card-stats">
+          <span title="当前段位">{currentLevelLabel}</span>
+          <span className="sep">/</span>
+          <span title="当前分数">{currentScore}</span>
+          <span className="sep">/</span>
+          <span title="平均顺位">{avgRank}</span>
+        </div>
       </div>
     );
   }
@@ -569,7 +481,7 @@ export default function HomePage() {
           </button>
         </nav>
       </header>
-      <main className="main" ref={mainRef}>
+      <main className="main">
         <div className="config-row" data-config-row>
           <label className="config-label">
             队伍个数：
@@ -620,14 +532,12 @@ export default function HomePage() {
                 <div className="team-box-title">队伍 {idx + 1}</div>
                 <div className="team-box-list">
                   {team.filter((n) => !deletedSet.has(n)).map((nickname) => (
-                    <PlayerCard
-                      key={nickname}
-                      nickname={nickname}
-                      source={{ kind: "team", teamIndex: idx }}
-                      dim={dragNickname === nickname}
-                      onDelete={() => handleDeleteCard(nickname)}
-                      expanded={expandedSet.has(nickname)}
-                    />
+<PlayerCard
+                    key={nickname}
+                    nickname={nickname}
+                    source={{ kind: "team", teamIndex: idx }}
+                    dim={dragNickname === nickname}
+                  />
                   ))}
                 </div>
               </div>
@@ -653,8 +563,6 @@ export default function HomePage() {
                     nickname={nickname}
                     source={{ kind: "pool" }}
                     dim={dragNickname === nickname}
-                    onDelete={() => handleDeleteCard(nickname)}
-                    expanded={expandedSet.has(nickname)}
                   />
                 ))}
               </div>
@@ -686,8 +594,6 @@ export default function HomePage() {
                     nickname={nickname}
                     source={{ kind: "standby" }}
                     dim={dragNickname === nickname}
-                    onDelete={() => handleDeleteCard(nickname)}
-                    expanded={expandedSet.has(nickname)}
                   />
                 ))}
               </div>
