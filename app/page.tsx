@@ -4,11 +4,6 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
-const STORAGE_LIST = "majsoul_player_list";
-const STORAGE_STATS = "majsoul_player_stats_cache";
-const STORAGE_TEAM_COUNT = "majsoul_team_count";
-const STORAGE_TEAMS = "majsoul_teams_draft";
-const STORAGE_STANDBY = "majsoul_standby";
 
 type PlayerStats = {
   count: number;
@@ -27,27 +22,73 @@ const LEVEL_RANK_MAP: Record<number, string> = {
   107: "魂天",
 };
 
-function loadList(): string[] {
-  if (typeof window === "undefined") return [];
+async function loadList(): Promise<string[]> {
   try {
-    const raw = localStorage.getItem(STORAGE_LIST);
-    if (!raw) return [];
-    const arr = JSON.parse(raw);
-    return Array.isArray(arr) ? arr.filter((x: unknown) => typeof x === "string") : [];
-  } catch {
+    const res = await fetch("/api/player/list?type=list");
+    if (!res.ok) {
+      console.error("获取选手列表失败:", res.statusText);
+      return [];
+    }
+    const data = await res.json();
+    return Array.isArray(data) ? data.filter((x: unknown) => typeof x === "string") : [];
+  } catch (error) {
+    console.error("获取选手列表异常:", error);
     return [];
   }
 }
 
-function loadStatsCache(): Record<string, PlayerStats> {
-  if (typeof window === "undefined") return {};
+async function loadStatsCache(): Promise<Record<string, PlayerStats>> {
   try {
-    const raw = localStorage.getItem(STORAGE_STATS);
-    if (!raw) return {};
-    const obj = JSON.parse(raw);
-    return obj && typeof obj === "object" ? obj : {};
-  } catch {
+    const res = await fetch("/api/player/stats-cache");
+    if (!res.ok) {
+      console.error("获取战绩数据失败:", res.statusText);
+      return {};
+    }
+    const data = await res.json();
+    return data && typeof data === "object" ? data : {};
+  } catch (error) {
+    console.error("获取战绩数据异常:", error);
     return {};
+  }
+}
+
+type TeamDraft = {
+  teamCount: number;
+  teams: string[][];
+  standby: string[];
+};
+
+async function loadTeamDraft(): Promise<TeamDraft> {
+  try {
+    const res = await fetch("/api/team/draft");
+    if (!res.ok) {
+      console.error("获取分组数据失败:", res.statusText);
+      return { teamCount: 2, teams: [], standby: [] };
+    }
+    const data = await res.json();
+    return {
+      teamCount: Math.max(2, Math.min(16, data?.teamCount || 2)),
+      teams: Array.isArray(data?.teams) ? data.teams : [],
+      standby: Array.isArray(data?.standby) ? data.standby : [],
+    };
+  } catch (error) {
+    console.error("获取分组数据异常:", error);
+    return { teamCount: 2, teams: [], standby: [] };
+  }
+}
+
+async function saveTeamDraft(draft: Partial<TeamDraft>): Promise<void> {
+  try {
+    const res = await fetch("/api/team/draft", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(draft),
+    });
+    if (!res.ok) {
+      console.error("保存分组数据失败:", res.statusText);
+    }
+  } catch (error) {
+    console.error("保存分组数据异常:", error);
   }
 }
 
@@ -95,39 +136,23 @@ export default function HomePage() {
     return list.filter((n) => !deletedSet.has(n) && !inTeams.has(n) && !standbySet.has(n));
   }, [list, teams, deletedSet, standbySet]);
 
-  const hydrate = useCallback(() => {
-    setList(loadList());
-    setStatsCache(loadStatsCache());
-    const savedCount = localStorage.getItem(STORAGE_TEAM_COUNT);
-    const n = savedCount ? Math.max(2, Math.min(16, parseInt(savedCount, 10) || 2)) : 2;
-    setTeamCount(n);
-    const savedTeams = localStorage.getItem(STORAGE_TEAMS);
-    let saved: string[][] = [];
-    if (savedTeams) {
-      try {
-        const parsed = JSON.parse(savedTeams);
-        if (Array.isArray(parsed)) saved = parsed.filter((t): t is string[] => Array.isArray(t) && t.every((x) => typeof x === "string"));
-      } catch {
-        // ignore
-      }
-    }
-    if (saved.length !== n) {
-      const next: string[][] = Array.from({ length: n }, (_, i) => saved[i] ?? []);
+  const hydrate = useCallback(async () => {
+    const [listData, statsData, draftData] = await Promise.all([
+      loadList(),
+      loadStatsCache(),
+      loadTeamDraft(),
+    ]);
+    setList(listData);
+    setStatsCache(statsData);
+    setTeamCount(draftData.teamCount);
+    // 确保 teams 数组长度与 teamCount 匹配
+    if (draftData.teams.length !== draftData.teamCount) {
+      const next: string[][] = Array.from({ length: draftData.teamCount }, (_, i) => draftData.teams[i] ?? []);
       setTeams(next);
     } else {
-      setTeams(saved);
+      setTeams(draftData.teams);
     }
-    const savedStandby = localStorage.getItem(STORAGE_STANDBY);
-    let standby: string[] = [];
-    if (savedStandby) {
-      try {
-        const parsed = JSON.parse(savedStandby);
-        if (Array.isArray(parsed)) standby = parsed.filter((x: unknown) => typeof x === "string");
-      } catch {
-        // ignore
-      }
-    }
-    setStandbyPool(standby);
+    setStandbyPool(draftData.standby);
   }, []);
 
   const teamCountEffectMountedRef = useRef(false);
@@ -135,6 +160,21 @@ export default function HomePage() {
   useEffect(() => {
     hydrate();
   }, [hydrate]);
+
+  // 监听 teams 和 standby 的变化，自动保存到服务端
+  const teamsStandbySaveRef = useRef(false);
+  useEffect(() => {
+    // 跳过初始加载
+    if (!teamsStandbySaveRef.current) {
+      teamsStandbySaveRef.current = true;
+      return;
+    }
+    // 延迟保存，避免频繁请求
+    const timer = setTimeout(() => {
+      saveTeamDraft({ teamCount, teams, standby: standbyPool }).catch((err) => console.error("自动保存分组数据失败:", err));
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [teamCount, teams, standbyPool]);
 
   useEffect(() => {
     if (!teamCountEffectMountedRef.current) {
@@ -146,24 +186,14 @@ export default function HomePage() {
       setTeamCount(n);
       return;
     }
-    localStorage.setItem(STORAGE_TEAM_COUNT, String(n));
-    let base: string[][] = [];
-    try {
-      const raw = localStorage.getItem(STORAGE_TEAMS);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) {
-          base = parsed.filter((t): t is string[] => Array.isArray(t) && t.every((x) => typeof x === "string"));
-        }
-      }
-    } catch {
-      // ignore
-    }
     setTeams((prev) => {
       const next: string[][] = [];
-      for (let i = 0; i < n; i++) next.push((base[i] ?? prev[i]) ?? []);
+      for (let i = 0; i < n; i++) next.push((prev[i] ?? []));
       const saved = next.map((t) => [...t]);
-      localStorage.setItem(STORAGE_TEAMS, JSON.stringify(saved));
+      setStandbyPool((standbyPrev) => {
+        saveTeamDraft({ teamCount: n, teams: saved, standby: standbyPrev }).catch((err) => console.error("保存分组数据失败:", err));
+        return standbyPrev;
+      });
       return next;
     });
   }, [teamCount]);
@@ -171,10 +201,13 @@ export default function HomePage() {
   const moveToPool = useCallback((nickname: string) => {
     setTeams((prev) => {
       const next = prev.map((t) => t.filter((n) => n !== nickname));
-      localStorage.setItem(STORAGE_TEAMS, JSON.stringify(next));
+      setStandbyPool((standbyPrev) => {
+        saveTeamDraft({ teamCount, teams: next, standby: standbyPrev }).catch((err) => console.error("保存分组数据失败:", err));
+        return standbyPrev;
+      });
       return next;
     });
-  }, []);
+  }, [teamCount]);
 
   const moveToTeam = useCallback((nickname: string, teamIndex: number) => {
     setTeams((prev) => {
@@ -182,55 +215,64 @@ export default function HomePage() {
       if (teamIndex >= 0 && teamIndex < next.length && !next[teamIndex].includes(nickname)) {
         next[teamIndex] = [...next[teamIndex], nickname];
       }
-      localStorage.setItem(STORAGE_TEAMS, JSON.stringify(next));
+      setStandbyPool((standbyPrev) => {
+        saveTeamDraft({ teamCount, teams: next, standby: standbyPrev }).catch((err) => console.error("保存分组数据失败:", err));
+        return standbyPrev;
+      });
       return next;
     });
-  }, []);
+  }, [teamCount]);
 
   const moveToStandby = useCallback((nickname: string) => {
     setTeams((prev) => {
       const next = prev.map((t) => t.filter((n) => n !== nickname));
-      localStorage.setItem(STORAGE_TEAMS, JSON.stringify(next));
+      setStandbyPool((standbyPrev) => {
+        if (standbyPrev.includes(nickname)) return standbyPrev;
+        const standbyNext = [...standbyPrev, nickname];
+        saveTeamDraft({ teamCount, teams: next, standby: standbyNext }).catch((err) => console.error("保存分组数据失败:", err));
+        return standbyNext;
+      });
       return next;
     });
-    setStandbyPool((prev) => {
-      if (prev.includes(nickname)) return prev;
-      const next = [...prev, nickname];
-      localStorage.setItem(STORAGE_STANDBY, JSON.stringify(next));
-      return next;
-    });
-  }, []);
+  }, [teamCount]);
 
   const removeFromStandby = useCallback((nickname: string) => {
     setStandbyPool((prev) => {
       const next = prev.filter((n) => n !== nickname);
-      localStorage.setItem(STORAGE_STANDBY, JSON.stringify(next));
+      setTeams((teamsPrev) => {
+        saveTeamDraft({ teamCount, teams: teamsPrev, standby: next }).catch((err) => console.error("保存分组数据失败:", err));
+        return teamsPrev;
+      });
       return next;
     });
-  }, []);
+  }, [teamCount]);
 
   const handleDeleteCard = useCallback((nickname: string) => {
     setDeletedNicknames((prev) => (prev.includes(nickname) ? prev : [...prev, nickname]));
     setTeams((prev) => {
       const next = prev.map((t) => t.filter((n) => n !== nickname));
-      localStorage.setItem(STORAGE_TEAMS, JSON.stringify(next));
+      setStandbyPool((standbyPrev) => {
+        const standbyNext = standbyPrev.filter((n) => n !== nickname);
+        if (standbyNext.length !== standbyPrev.length || next.length !== prev.length) {
+          saveTeamDraft({ teamCount, teams: next, standby: standbyNext }).catch((err) => console.error("保存分组数据失败:", err));
+        }
+        return standbyNext;
+      });
       return next;
     });
-    setStandbyPool((prev) => {
-      const next = prev.filter((n) => n !== nickname);
-      if (next.length !== prev.length) localStorage.setItem(STORAGE_STANDBY, JSON.stringify(next));
-      return next;
-    });
-  }, []);
+  }, [teamCount]);
 
   const handleRestoreAll = useCallback(() => {
     setDeletedNicknames([]);
     setTeams((prev) => {
       const next = prev.map(() => [] as string[]);
-      localStorage.setItem(STORAGE_TEAMS, JSON.stringify(next));
+      setStandbyPool((standbyPrev) => {
+        saveTeamDraft({ teamCount, teams: next, standby: standbyPrev }).catch((err) => console.error("保存分组数据失败:", err));
+        return standbyPrev;
+      });
       return next;
     });
-  }, []);
+  }, [teamCount]);
 
   const handleRandomGroup = useCallback(() => {
     setTeams((prev) => {
@@ -242,10 +284,13 @@ export default function HomePage() {
       shuffled.forEach((nickname, i) => {
         next[i % n].push(nickname);
       });
-      localStorage.setItem(STORAGE_TEAMS, JSON.stringify(next));
+      setStandbyPool((standbyPrev) => {
+        saveTeamDraft({ teamCount, teams: next, standby: standbyPrev }).catch((err) => console.error("保存分组数据失败:", err));
+        return standbyPrev;
+      });
       return next;
     });
-  }, [list, deletedSet, standbySet]);
+  }, [list, deletedSet, standbySet, teamCount]);
 
   const handleDropPool = (e: React.DragEvent) => {
     e.preventDefault();

@@ -22,7 +22,6 @@ const SORTABLE_COLUMNS = [
 
 const STORAGE_LIST = "majsoul_player_list";
 const STORAGE_CACHE = "majsoul_player_id_cache";
-const STORAGE_STATS = "majsoul_player_stats_cache";
 
 type SearchItem = {
   id: number;
@@ -41,52 +40,94 @@ type PlayerStats = {
   nickname: string;
 };
 
-function loadList(): string[] {
-  if (typeof window === "undefined") return [];
+async function loadList(): Promise<string[]> {
   try {
-    const raw = localStorage.getItem(STORAGE_LIST);
-    if (!raw) return [];
-    const arr = JSON.parse(raw);
-    return Array.isArray(arr) ? arr.filter((x: unknown) => typeof x === "string") : [];
-  } catch {
+    const res = await fetch("/api/player/list?type=list");
+    if (!res.ok) {
+      console.error("获取选手列表失败:", res.statusText);
+      return [];
+    }
+    const data = await res.json();
+    return Array.isArray(data) ? data.filter((x: unknown) => typeof x === "string") : [];
+  } catch (error) {
+    console.error("获取选手列表异常:", error);
     return [];
   }
 }
 
-function loadCache(): Record<string, number> {
-  if (typeof window === "undefined") return {};
+async function loadCache(): Promise<Record<string, number>> {
   try {
-    const raw = localStorage.getItem(STORAGE_CACHE);
-    if (!raw) return {};
-    const obj = JSON.parse(raw);
-    return obj && typeof obj === "object" ? obj : {};
-  } catch {
+    const res = await fetch("/api/player/list?type=cache");
+    if (!res.ok) {
+      console.error("获取ID缓存失败:", res.statusText);
+      return {};
+    }
+    const data = await res.json();
+    return data && typeof data === "object" ? data : {};
+  } catch (error) {
+    console.error("获取ID缓存异常:", error);
     return {};
   }
 }
 
-function loadStatsCache(): Record<string, PlayerStats> {
-  if (typeof window === "undefined") return {};
+async function loadStatsCache(): Promise<Record<string, PlayerStats>> {
   try {
-    const raw = localStorage.getItem(STORAGE_STATS);
-    if (!raw) return {};
-    const obj = JSON.parse(raw);
-    return obj && typeof obj === "object" ? obj : {};
-  } catch {
+    const res = await fetch("/api/player/stats-cache");
+    if (!res.ok) {
+      console.error("获取战绩数据失败:", res.statusText);
+      return {};
+    }
+    const data = await res.json();
+    return data && typeof data === "object" ? data : {};
+  } catch (error) {
+    console.error("获取战绩数据异常:", error);
     return {};
   }
 }
 
-function saveList(list: string[]) {
-  localStorage.setItem(STORAGE_LIST, JSON.stringify(list));
+async function saveList(list: string[]): Promise<void> {
+  try {
+    const res = await fetch("/api/player/list", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ list }),
+    });
+    if (!res.ok) {
+      console.error("保存选手列表失败:", res.statusText);
+    }
+  } catch (error) {
+    console.error("保存选手列表异常:", error);
+  }
 }
 
-function saveCache(cache: Record<string, number>) {
-  localStorage.setItem(STORAGE_CACHE, JSON.stringify(cache));
+async function saveCache(cache: Record<string, number>): Promise<void> {
+  try {
+    const res = await fetch("/api/player/list", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cache }),
+    });
+    if (!res.ok) {
+      console.error("保存ID缓存失败:", res.statusText);
+    }
+  } catch (error) {
+    console.error("保存ID缓存异常:", error);
+  }
 }
 
-function saveStatsCache(stats: Record<string, PlayerStats>) {
-  localStorage.setItem(STORAGE_STATS, JSON.stringify(stats));
+async function saveStatsCache(stats: Record<string, PlayerStats>): Promise<void> {
+  try {
+    const res = await fetch("/api/player/stats-cache", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ stats }),
+    });
+    if (!res.ok) {
+      console.error("保存战绩数据失败:", res.statusText);
+    }
+  } catch (error) {
+    console.error("保存战绩数据异常:", error);
+  }
 }
 
 function levelScore(l: { score: number; delta: number }): number {
@@ -184,10 +225,15 @@ export default function SettingsPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
 
-  const hydrate = useCallback(() => {
-    setList(loadList());
-    setCache(loadCache());
-    setStatsCache(loadStatsCache());
+  const hydrate = useCallback(async () => {
+    const [listData, cacheData, statsData] = await Promise.all([
+      loadList(),
+      loadCache(),
+      loadStatsCache(),
+    ]);
+    setList(listData);
+    setCache(cacheData);
+    setStatsCache(statsData);
   }, []);
 
   useEffect(() => {
@@ -240,7 +286,7 @@ export default function SettingsPage() {
         id = match ? match.id : -1;
         const newCache = { ...cache, [nickname]: id };
         setCache(newCache);
-        saveCache(newCache);
+        await saveCache(newCache);
       }
       if (list.includes(nickname)) {
         setError("该选手已在列表中");
@@ -248,21 +294,28 @@ export default function SettingsPage() {
       }
       const newList = [...list, nickname];
       setList(newList);
-      saveList(newList);
+      await saveList(newList);
       setInput("");
     } finally {
       setLoading(false);
     }
   };
 
-  const removePlayer = (nickname: string) => {
+  const removePlayer = async (nickname: string) => {
     const newList = list.filter((n) => n !== nickname);
     setList(newList);
-    saveList(newList);
+    await saveList(newList);
     const nextStats = { ...statsCache };
     delete nextStats[nickname];
     setStatsCache(nextStats);
-    saveStatsCache(nextStats);
+    // 从服务端删除该选手的战绩
+    try {
+      await fetch(`/api/player/stats-cache?nickname=${encodeURIComponent(nickname)}`, {
+        method: "DELETE",
+      });
+    } catch (error) {
+      console.error("删除战绩失败:", error);
+    }
   };
 
   const refreshAll = async () => {
@@ -284,7 +337,7 @@ export default function SettingsPage() {
             id = match ? match.id : -1;
             setCache((prev) => {
               const next = { ...prev, [nickname]: id ?? -1 };
-              saveCache(next);
+              saveCache(next).catch((err) => console.error("保存ID缓存失败:", err));
               return next;
             });
           }
@@ -376,7 +429,7 @@ export default function SettingsPage() {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       try {
         const raw = reader.result as string;
         const data = JSON.parse(raw);
@@ -393,9 +446,11 @@ export default function SettingsPage() {
         setList(mergedList);
         setCache(mergedCache);
         setStatsCache(mergedStats);
-        saveList(mergedList);
-        saveCache(mergedCache);
-        saveStatsCache(mergedStats);
+        await Promise.all([
+          saveList(mergedList),
+          saveCache(mergedCache),
+          saveStatsCache(mergedStats),
+        ]);
         setError("");
       } catch {
         setError("导入失败：文件格式无效，请使用导出的 JSON 文件");
