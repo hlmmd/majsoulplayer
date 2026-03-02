@@ -128,6 +128,12 @@ export default function HomePage() {
   const [pointerDrag, setPointerDrag] = useState<{ nickname: string; source: DragSource; offsetX: number; offsetY: number } | null>(null);
   const [deletedNicknames, setDeletedNicknames] = useState<string[]>([]);
   const [standbyPool, setStandbyPool] = useState<string[]>([]);
+  const [authenticated, setAuthenticated] = useState<boolean | null>(null);
+  const [showLoginModal, setShowLoginModal] = useState(false);
+  const [loginUsername, setLoginUsername] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [loginError, setLoginError] = useState("");
+  const [loginLoading, setLoginLoading] = useState(false);
   const deletedSet = useMemo(() => new Set(deletedNicknames), [deletedNicknames]);
   const standbySet = useMemo(() => new Set(standbyPool), [standbyPool]);
 
@@ -157,16 +163,49 @@ export default function HomePage() {
 
   const teamCountEffectMountedRef = useRef(false);
 
+  // 检查登录状态
+  const checkAuth = useCallback(async () => {
+    try {
+      const res = await fetch("/api/auth/session");
+      const data = await res.json();
+      setAuthenticated(data.authenticated === true);
+    } catch {
+      setAuthenticated(false);
+    }
+  }, []);
+
   useEffect(() => {
     hydrate();
-  }, [hydrate]);
+    checkAuth();
+  }, [hydrate, checkAuth]);
 
-  // 监听 teams 和 standby 的变化，自动保存到服务端
+  // 实时更新分组数据（每 2 秒轮询一次）
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      try {
+        const draft = await loadTeamDraft();
+        setTeamCount(draft.teamCount);
+        if (draft.teams.length !== draft.teamCount) {
+          const next: string[][] = Array.from({ length: draft.teamCount }, (_, i) => draft.teams[i] ?? []);
+          setTeams(next);
+        } else {
+          setTeams(draft.teams);
+        }
+        setStandbyPool(draft.standby);
+      } catch (error) {
+        console.error("更新分组数据失败:", error);
+      }
+    }, 2000);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  // 监听 teams 和 standby 的变化，自动保存到服务端（仅登录用户）
   const teamsStandbySaveRef = useRef(false);
   useEffect(() => {
-    // 跳过初始加载
-    if (!teamsStandbySaveRef.current) {
-      teamsStandbySaveRef.current = true;
+    // 跳过初始加载或未登录用户
+    if (!teamsStandbySaveRef.current || !authenticated) {
+      if (authenticated) teamsStandbySaveRef.current = true;
       return;
     }
     // 延迟保存，避免频繁请求
@@ -174,7 +213,7 @@ export default function HomePage() {
       saveTeamDraft({ teamCount, teams, standby: standbyPool }).catch((err) => console.error("自动保存分组数据失败:", err));
     }, 300);
     return () => clearTimeout(timer);
-  }, [teamCount, teams, standbyPool]);
+  }, [teamCount, teams, standbyPool, authenticated]);
 
   useEffect(() => {
     if (!teamCountEffectMountedRef.current) {
@@ -341,7 +380,7 @@ export default function HomePage() {
   teamsRef.current = teams;
 
   const handleCardMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>, nickname: string, source: DragSource) => {
-    if (e.button !== 0) return;
+    if (e.button !== 0 || !authenticated) return; // 未登录时禁用拖拽
     e.preventDefault();
     const rect = e.currentTarget.getBoundingClientRect();
     setDragPending({
@@ -352,7 +391,7 @@ export default function HomePage() {
       startX: e.clientX,
       startY: e.clientY,
     });
-  }, []);
+  }, [authenticated]);
 
   useEffect(() => {
     if (!dragPending) return;
@@ -443,8 +482,35 @@ export default function HomePage() {
 
   async function handleLogout() {
     await fetch("/api/logout", { method: "POST" });
-    router.push("/login");
+    setAuthenticated(false);
     router.refresh();
+  }
+
+  async function handleLogin(e: React.FormEvent) {
+    e.preventDefault();
+    setLoginError("");
+    setLoginLoading(true);
+    try {
+      const res = await fetch("/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: loginUsername, password: loginPassword }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setLoginError(data.message || "登录失败");
+        return;
+      }
+      setShowLoginModal(false);
+      setLoginUsername("");
+      setLoginPassword("");
+      setAuthenticated(true);
+      router.refresh();
+    } catch {
+      setLoginError("网络错误，请重试");
+    } finally {
+      setLoginLoading(false);
+    }
   }
 
   function PlayerCard({
@@ -518,50 +584,97 @@ export default function HomePage() {
       <header className="header">
         <h1 className="logo">雀魂数据</h1>
         <nav className="nav">
-          <Link href="/settings" className="nav-link">
-            选手列表与战绩
-          </Link>
-          <button type="button" onClick={handleLogout} className="logout-btn">
-            退出登录
-          </button>
+          {authenticated && (
+            <Link href="/settings" className="nav-link">
+              选手列表与战绩
+            </Link>
+          )}
+          {authenticated ? (
+            <button type="button" onClick={handleLogout} className="logout-btn">
+              退出登录
+            </button>
+          ) : (
+            <button type="button" onClick={() => setShowLoginModal(true)} className="login-btn">
+              登录
+            </button>
+          )}
         </nav>
       </header>
-      <main className="main">
-        <div className="config-row" data-config-row>
-          <label className="config-label">
-            队伍个数：
-            <input
-              type="number"
-              min={2}
-              max={16}
-              value={teamCount}
-              onChange={(e) => setTeamCount(parseInt(e.target.value, 10) || 2)}
-              className="config-input"
-            />
-          </label>
-          <button
-            type="button"
-            className="btn-restore"
-            onClick={handleRestoreAll}
-            disabled={deletedNicknames.length === 0 && !teams.some((t) => t.length > 0)}
-            title={
-              deletedNicknames.length === 0 && !teams.some((t) => t.length > 0)
-                ? "没有可复原的内容"
-                : "恢复被删除的选手，并将所有选手放回选手区"
-            }
-          >
-            复原
-          </button>
-          <button
-            type="button"
-            className="btn-random"
-            onClick={handleRandomGroup}
-            disabled={pool.length === 0}
-            title="将选手区中的选手随机均分到各队伍"
-          >
-            随机分组
-          </button>
+      {showLoginModal && (
+        <div className="modal-overlay" onClick={() => setShowLoginModal(false)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <h2 className="modal-title">登录</h2>
+            <form onSubmit={handleLogin} className="modal-form">
+              <label className="modal-label">用户名</label>
+              <input
+                type="text"
+                className="modal-input"
+                value={loginUsername}
+                onChange={(e) => setLoginUsername(e.target.value)}
+                autoComplete="username"
+                required
+                autoFocus
+              />
+              <label className="modal-label">密码</label>
+              <input
+                type="password"
+                className="modal-input"
+                value={loginPassword}
+                onChange={(e) => setLoginPassword(e.target.value)}
+                autoComplete="current-password"
+                required
+              />
+              {loginError && <p className="modal-error">{loginError}</p>}
+              <div className="modal-actions">
+                <button type="button" className="modal-btn-cancel" onClick={() => setShowLoginModal(false)}>
+                  取消
+                </button>
+                <button type="submit" className="modal-btn-submit" disabled={loginLoading}>
+                  {loginLoading ? "登录中…" : "登录"}
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
+      )}
+      <main className="main">
+        {authenticated && (
+          <div className="config-row" data-config-row>
+            <label className="config-label">
+              队伍个数：
+              <input
+                type="number"
+                min={2}
+                max={16}
+                value={teamCount}
+                onChange={(e) => setTeamCount(parseInt(e.target.value, 10) || 2)}
+                className="config-input"
+              />
+            </label>
+            <button
+              type="button"
+              className="btn-restore"
+              onClick={handleRestoreAll}
+              disabled={deletedNicknames.length === 0 && !teams.some((t) => t.length > 0)}
+              title={
+                deletedNicknames.length === 0 && !teams.some((t) => t.length > 0)
+                  ? "没有可复原的内容"
+                  : "恢复被删除的选手，并将所有选手放回选手区"
+              }
+            >
+              复原
+            </button>
+            <button
+              type="button"
+              className="btn-random"
+              onClick={handleRandomGroup}
+              disabled={pool.length === 0}
+              title="将选手区中的选手随机均分到各队伍"
+            >
+              随机分组
+            </button>
+          </div>
+        )}
 
         <section className="teams-section" aria-label="队伍区域">
           <div className="teams-grid" style={{ gridTemplateColumns: `repeat(${teamCount}, 1fr)` }}>
@@ -615,36 +728,39 @@ export default function HomePage() {
           </div>
         </section>
 
-        <section className="standby-section" aria-label="备战区">
-          <h2 className="standby-title">备战区（复原时不会恢复）</h2>
-          <div
-            className="standby-area"
-            onDragOver={handleDragOver}
-            onDrop={(e) => {
-              e.preventDefault();
-              const nickname = e.dataTransfer.getData("text/plain");
-              if (nickname) moveToStandby(nickname);
-              setDragSource(null);
-              setDragNickname(null);
-            }}
-            data-drag-over={dragSource !== null}
-          >
-            {standbyPool.length === 0 ? (
-              <p className="standby-empty">可将选手区或队伍中的卡片拖入备战区</p>
-            ) : (
-              <div className="standby-cards">
-                {standbyPool.map((nickname) => (
-                  <PlayerCard
-                    key={nickname}
-                    nickname={nickname}
-                    source={{ kind: "standby" }}
-                    dim={dragNickname === nickname}
-                  />
-                ))}
-              </div>
-            )}
-          </div>
-        </section>
+        {authenticated && (
+          <section className="standby-section" aria-label="备战区">
+            <h2 className="standby-title">备战区（复原时不会恢复）</h2>
+            <div
+              className="standby-area"
+              onDragOver={handleDragOver}
+              onDrop={(e) => {
+                e.preventDefault();
+                const nickname = e.dataTransfer.getData("text/plain");
+                if (nickname) moveToStandby(nickname);
+                setDragSource(null);
+                setDragNickname(null);
+              }}
+              data-drag-over={dragSource !== null}
+            >
+              {standbyPool.length === 0 ? (
+                <p className="standby-empty">可将选手区或队伍中的卡片拖入备战区</p>
+              ) : (
+                <div className="standby-cards">
+                  {standbyPool.map((nickname) => (
+                    <PlayerCard
+                      key={nickname}
+                      nickname={nickname}
+                      source={{ kind: "standby" }}
+                      dim={dragNickname === nickname}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          </section>
+        )}
+
       </main>
       <style jsx>{`
         .home-wrap {
@@ -674,17 +790,111 @@ export default function HomePage() {
         .nav-link {
           font-size: 0.9rem;
         }
-        .logout-btn {
+        .logout-btn,
+        .login-btn {
           padding: 0.35rem 0.6rem;
           font-size: 0.9rem;
           color: var(--accent);
           background: transparent;
           border: 1px solid var(--border);
           border-radius: 6px;
+          cursor: pointer;
         }
-        .logout-btn:hover {
+        .logout-btn:hover,
+        .login-btn:hover {
           background: var(--border);
           color: var(--text);
+        }
+        .modal-overlay {
+          position: fixed;
+          top: 0;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          background: rgba(0, 0, 0, 0.5);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          z-index: 10000;
+        }
+        .modal-content {
+          background: var(--bg-card);
+          border: 1px solid var(--border);
+          border-radius: 12px;
+          padding: 2rem;
+          width: 90%;
+          max-width: 400px;
+        }
+        .modal-title {
+          margin: 0 0 1.5rem;
+          font-size: 1.5rem;
+          font-weight: 600;
+          color: var(--accent);
+        }
+        .modal-form {
+          display: flex;
+          flex-direction: column;
+          gap: 1rem;
+        }
+        .modal-label {
+          font-size: 0.875rem;
+          font-weight: 500;
+          color: var(--text-muted);
+        }
+        .modal-input {
+          width: 100%;
+          padding: 0.6rem 0.75rem;
+          font-size: 1rem;
+          color: var(--text);
+          background: var(--bg);
+          border: 1px solid var(--border);
+          border-radius: 8px;
+          outline: none;
+          transition: border-color 0.2s;
+        }
+        .modal-input:focus {
+          border-color: var(--accent);
+        }
+        .modal-error {
+          margin: 0;
+          font-size: 0.875rem;
+          color: var(--error);
+        }
+        .modal-actions {
+          display: flex;
+          gap: 0.75rem;
+          margin-top: 0.5rem;
+        }
+        .modal-btn-cancel {
+          flex: 1;
+          padding: 0.65rem 1rem;
+          font-size: 1rem;
+          color: var(--text);
+          background: transparent;
+          border: 1px solid var(--border);
+          border-radius: 8px;
+          cursor: pointer;
+        }
+        .modal-btn-cancel:hover {
+          background: var(--border);
+        }
+        .modal-btn-submit {
+          flex: 1;
+          padding: 0.65rem 1rem;
+          font-size: 1rem;
+          font-weight: 500;
+          color: #0f1419;
+          background: var(--accent);
+          border: none;
+          border-radius: 8px;
+          cursor: pointer;
+        }
+        .modal-btn-submit:hover:not(:disabled) {
+          background: var(--accent-hover);
+        }
+        .modal-btn-submit:disabled {
+          opacity: 0.7;
+          cursor: not-allowed;
         }
         .main {
           flex: 1;

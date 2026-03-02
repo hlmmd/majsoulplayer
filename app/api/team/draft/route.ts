@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { promises as fs } from "fs";
 import { join } from "path";
+import { getSessionFromRequest } from "@/lib/auth";
 
 const DATA_DIR = join(process.cwd(), "data");
 const DRAFT_FILE = join(DATA_DIR, "team-draft.json");
@@ -71,6 +72,16 @@ export async function GET() {
 
 // POST: 更新分组数据（支持部分更新）
 export async function POST(request: NextRequest) {
+  // 检查登录状态
+  const cookie = request.headers.get("cookie");
+  const authenticated = await getSessionFromRequest(cookie);
+  if (!authenticated) {
+    return NextResponse.json(
+      { error: "需要登录才能修改分组数据" },
+      { status: 401 }
+    );
+  }
+
   try {
     const body = await request.json();
     const currentDraft = await readDraft();
@@ -102,6 +113,16 @@ export async function POST(request: NextRequest) {
 
 // PUT: 替换所有分组数据
 export async function PUT(request: NextRequest) {
+  // 检查登录状态
+  const cookie = request.headers.get("cookie");
+  const authenticated = await getSessionFromRequest(cookie);
+  if (!authenticated) {
+    return NextResponse.json(
+      { error: "需要登录才能修改分组数据" },
+      { status: 401 }
+    );
+  }
+
   try {
     const body = await request.json();
     
